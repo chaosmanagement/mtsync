@@ -1,0 +1,22 @@
+{
+    "ipv6": {
+        "address": [
+            {
+                "interface": "bridge",
+                "address": "2010::7/64",
+                "disabled": "false"
+            },
+            {
+                "interface": "bridge",
+                "address": "2010::1/64",
+                "disabled": "false",
+                "comment": "Hello world!"
+            }
+        ]
+    },
+    "ip": {
+        "settings": {
+            "rp-filter": "no"
+        }
+    }
+}

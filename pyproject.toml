@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "mtsync"
+version = "0.1.0"
+description = ""
+authors = ["Paweł pidpawel Kozubal <git@pidpawel.eu>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+click = "^8.0.1"
+aiohttp = {extras = ["speedups"], version = "^3.7.4"}
+rich = "^10.3.0"
+uvloop = "^0.15.2"
+frozendict = "^2.0.2"
+
+[tool.poetry.dev-dependencies]
+pytest = "^5.2"
+types-click = "^7.1.1"
+types-frozendict = "^0.1.4"
+black = {version = "^21.6b0", allow-prereleases = true}
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+mtsync = 'mtsync.cli:main'
