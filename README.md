@@ -2,34 +2,36 @@
 
 MTsync aims to be a building block for a GitOps approach to Mikrotik device management. It consumes a desired configuration tree and applies it to a live device.
 
+Have in mind that this is not yet a production ready tool.
+
 ## Usage
 
 In order to use this tool your device must be running a version of RouterOS that has the [REST API](https://help.mikrotik.com/docs/display/ROS/REST+API) available, **configured** and enabled.
 
 Secondly you need to prepare a JSON file (or stream) that'll describe a desired state of your device. Here's an example:
 
-```
+```json
 {
-    "ipv6": {
-        "address": [
-            {
-                "interface": "bridge",
-                "address": "2010::7/64",
-                "disabled": "false"
-            },
-            {
-                "interface": "bridge",
-                "address": "2010::1/64",
-                "disabled": "false",
-                "comment": "Hello world!"
-            }
-        ]
-    },
-    "ip": {
-        "settings": {
-            "rp-filter": "no"
-        }
+  "ipv6": {
+    "address": [
+      {
+        "interface": "bridge",
+        "address": "2010::7/64",
+        "disabled": "false"
+      },
+      {
+        "interface": "bridge",
+        "address": "2010::1/64",
+        "disabled": "false",
+        "comment": "Hello world!"
+      }
+    ]
+  },
+  "ip": {
+    "settings": {
+      "rp-filter": "no"
     }
+  }
 }
 ```
 
@@ -47,7 +49,7 @@ Here you can find a couple of rules about how this piece of software works inter
 
 Finally you need to run the tool itself:
 
-```
+```shell
  mtsync --hostname=192.168.1.1 --desired-file=examples/example_input.json --ignore-certificate-errors
 ```
 
@@ -63,7 +65,7 @@ By default it will connect as `admin` with empty password to `192.168.88.1`, as 
 
 ## Building
 
-```
+```shell
 poetry run pip freeze | grep -v mtsync > requirements.txt && pex -D . -r requirements.txt -m mtsync.cli -o dist/mtsync
 ```
 

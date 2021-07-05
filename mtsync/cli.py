@@ -3,14 +3,25 @@ import asyncio
 import json
 import logging
 import sys
+from functools import wraps
 from typing import Optional, TextIO
 
 import click
 import uvloop
 from rich.console import Console
 
+from mtsync.connection import Connection
 from mtsync.settings import Settings
 from mtsync.synchronizer import Synchronizer
+
+
+def wrap_coroutine(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        uvloop.install()
+        asyncio.run(f(*args, **kwargs))
+
+    return wrapper
 
 
 @click.command()
@@ -42,7 +53,8 @@ from mtsync.synchronizer import Synchronizer
     is_flag=True,
     default=False,
 )
-def main(
+@wrap_coroutine
+async def main(
     hostname: Optional[str],
     username: Optional[str],
     password: Optional[str],
@@ -58,6 +70,10 @@ def main(
         console.log("Waiting on stdin")
 
     desired_tree = json.load(desired_file)
+
+    if not isinstance(desired_tree, dict):
+        console.log("[red]Expected the input data to be a dictionary/mapping.[/red]")
+        sys.exit(-1)
 
     if not "metadata" in desired_tree:
         desired_tree["metadata"] = {}
@@ -82,14 +98,15 @@ def main(
     del desired_tree["metadata"]
     console.log("Settings loaded.")
 
-    synchronizer = Synchronizer(
-        console=console,
-        settings=settings,
-        desired_tree=desired_tree,
-    )
+    async with Connection(console=console, settings=settings) as connection:
+        synchronizer = Synchronizer(
+            console=console,
+            connection=connection,
+        )
 
-    uvloop.install()
-    asyncio.run(synchronizer.run())
+        await synchronizer.run(
+            desired_tree=desired_tree,
+        )
 
 
 if __name__ == "__main__":

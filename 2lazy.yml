@@ -1,0 +1,6 @@
+quiet: true
+start_in_project_dir: true
+
+commands:
+  dev: 'find . -name "*.py" | entr testslide --show-testslide-stack-trace $(find tests -name "*.py")'
+  lint: "isort mtsync && black mtsync/ tests/ && mypy mtsync/ tests/"

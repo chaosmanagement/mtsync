@@ -1,107 +1,31 @@
 import asyncio
 import itertools
 import json
-from enum import Enum
-from typing import Any, Callable, DefaultDict, Dict, Generator, List, Optional
+from copy import copy
+from typing import Any, Callable, DefaultDict, Dict, Generator, List, Optional, Tuple
 
-import aiohttp
 from frozendict import frozendict
+from rich import print as rich_print
 from rich.console import Console
 from rich.progress import Progress
 
-from mtsync.settings import Settings
-
-
-class ActionKind(Enum):
-    PATCH = 1
-    PUT = 2
-    DELETE = 3
-    POST = 4
-
-
-# This could have probably been a dataclass but shh
-class Action:
-    def __init__(
-        self,
-        kind: ActionKind,
-        path: str,
-        set_dict: Optional[Dict[str, str]] = None,
-        current_dict: Optional[Dict[str, str]] = None,
-    ) -> None:
-        self.kind = kind
-        self.path = path
-
-        self.set_dict: Dict[str, str] = set_dict or {}
-        self.current_dict: Dict[str, str] = current_dict or {}
-
-    def diff(self) -> List[str]:
-        differences = []
-
-        keys = set(self.set_dict.keys()) | set(self.current_dict.keys()) - {".id"}
-
-        for key in keys:
-            left = self.current_dict[key] if key in self.current_dict else "[empty]"
-            right = self.set_dict[key] if key in self.set_dict else "[empty]"
-
-            if left != right:
-                differences.append(
-                    f" [bold blue]{key}[/bold blue]: {left} [bold]->[/bold] {right}"
-                )
-
-        return differences
-
-    def __rich_repr__(self) -> Generator:
-        yield "kind", self.kind
-        yield "path", self.path
-        yield "set_dict", self.set_dict
+from mtsync.action import Action, ActionKind
+from mtsync.connection import Connection
+from mtsync.constants import non_movable_namespaces
+from mtsync.imagined import Imagined
 
 
 class Synchronizer:
     def __init__(
         self,
         console: Console,
-        settings: Settings,
-        desired_tree: Dict,
+        connection: Connection,
     ) -> None:
         self.console = console
-        self.settings = settings
-        self.desired_tree = desired_tree
+        self.connection = connection
 
-        self.session: aiohttp.ClientSession
-
-    def _construct_url(
-        self,
-        endpoint: str,
-    ) -> str:
-        return f"https://{self.settings.hostname}/rest{endpoint}"
-
-    async def _call(
-        self,
-        method: Callable,
-        endpoint: str,
-        **kwargs: Dict[str, Any],
-    ) -> None:
-        async with method(
-            self._construct_url(endpoint=endpoint),
-            verify_ssl=not self.settings.ignore_certificate_errors,
-            auth=aiohttp.BasicAuth(
-                login=self.settings.username, password=self.settings.password
-            ),
-            headers={"content-type": "application/json"},
-            **kwargs,
-        ) as response:
-            try:
-                return await response.json()
-            except aiohttp.client_exceptions.ContentTypeError:
-                text = await response.text()
-
-                if text == "":
-                    return None
-
-                return json.loads(text)
-
+    @staticmethod
     def _score_items(
-        self,
         a: Dict[str, str],
         b: Dict[str, str],
     ) -> int:
@@ -112,35 +36,45 @@ class Synchronizer:
         score = 0
 
         for k, v in a.items():
+            if k == ".id":
+                continue
+
             if k in b and b[k] == v:
                 score += 1
 
         return score
 
-    async def _analyze_list(
+    @staticmethod
+    def _test_equality(
+        a: Dict[str, str],
+        b: Dict[str, str],
+    ) -> bool:
+        a = dict(filter(lambda x: x[0] != ".id", a.items()))
+        b = dict(filter(lambda x: x[0] != ".id", b.items()))
+
+        if len(a.keys()) != len(b.keys()):
+            return False
+
+        return Synchronizer._score_items(a=a, b=b) == len(a.keys())
+
+    @staticmethod
+    def _freeze_list(
+        l: List[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        return [frozendict(d) for d in l]
+
+    async def _analyze_list_add_remove(
         self,
         current_path: str,
-        analyzed_list: List[Dict[str, str]],
+        current_items: List[Dict[str, str]],
+        desired_items: List[Dict[str, str]],
+        imagined_items: Imagined,
     ) -> List[Action]:
-        desired_items = [frozendict(it) for it in analyzed_list]
-        proplist = set(itertools.chain(*[item.keys() for item in desired_items])) | {
-            ".id"
-        }
-
-        current_items = [
-            frozendict(it)
-            for it in await self._call(
-                method=self.session.get,
-                endpoint=current_path,
-                params={
-                    "dynamic": "false",
-                    ".proplist": ",".join(proplist),
-                },
-            )
-        ]
-
         scores: Dict[Any, Dict[Any, Any]] = DefaultDict(dict)
         actions: List[Action] = []
+
+        current_items = self._freeze_list(current_items)
+        desired_items = self._freeze_list(desired_items)
 
         for current_item in current_items:
             for desired_item in desired_items:
@@ -182,16 +116,10 @@ class Synchronizer:
                             current_dict=max_current_item,
                         )
                     )
+                    imagined_items.update(
+                        id=max_current_item[".id"], new_state=max_desired_item
+                    )
                     break
-
-        for current_item in current_items:
-            actions.append(
-                Action(
-                    kind=ActionKind.DELETE,
-                    path=f"{current_path}/{current_item['.id']}",
-                    current_dict=current_item,
-                )
-            )
 
         for desired_item in desired_items:
             actions.append(
@@ -201,6 +129,90 @@ class Synchronizer:
                     set_dict=desired_item,
                 )
             )
+            imagined_items.append(desired_item)
+
+        for current_item in current_items:
+            actions.append(
+                Action(
+                    kind=ActionKind.DELETE,
+                    path=f"{current_path}/{current_item['.id']}",
+                    current_dict=current_item,
+                )
+            )
+            imagined_items.delete(id=current_item[".id"])
+
+        return actions
+
+    async def _analyze_list_reorder(
+        self,
+        current_path: str,
+        imagined_items: Imagined,
+        desired_items: List[Dict[str, str]],
+    ) -> List[Action]:
+        if current_path in non_movable_namespaces:
+            return []
+
+        actions: List[Action] = []
+
+        for desired_i, desired_item in enumerate(desired_items):
+            if self._test_equality(desired_item, imagined_items.state[desired_i]):
+                continue
+
+            for imagined_item in imagined_items.state[desired_i + 1 :]:
+                if self._test_equality(desired_item, imagined_item):
+                    current_id = imagined_item[".id"]
+                    desired_id = imagined_items.state[desired_i][".id"]
+                    imagined_items.move(
+                        number=current_id,
+                        destination=desired_id,
+                    )
+                    actions.append(
+                        Action(
+                            kind=ActionKind.POST,
+                            path=f"{current_path}/move",
+                            set_dict={
+                                "numbers": current_id,
+                                "destination": desired_id,
+                            },
+                        )
+                    )
+                    break
+
+        return actions
+
+    async def _analyze_list(
+        self,
+        current_path: str,
+        analyzed_list: List[Dict[str, str]],
+    ) -> List[Action]:
+        desired_items = analyzed_list
+        proplist = set(itertools.chain(*[item.keys() for item in desired_items])) | {
+            ".id"
+        }
+
+        current_items = await self.connection.get(
+            endpoint=current_path,
+            params={
+                "dynamic": "false",
+                ".proplist": ",".join(proplist),
+            },
+        )
+
+        actions: List[Action] = []
+        imagined_items = Imagined(initial_state=current_items)
+
+        actions += await self._analyze_list_add_remove(
+            current_path=current_path,
+            current_items=current_items,
+            desired_items=desired_items,
+            imagined_items=imagined_items,
+        )
+
+        actions += await self._analyze_list_reorder(
+            current_path=current_path,
+            imagined_items=imagined_items,
+            desired_items=desired_items,
+        )
 
         return actions
 
@@ -209,7 +221,7 @@ class Synchronizer:
         current_path: str,
         analyzed_dict: Dict[str, str],
     ) -> List[Action]:
-        current_state = await self._call(method=self.session.get, endpoint=current_path)
+        current_state = await self.connection.get(endpoint=current_path)
         desired_state = analyzed_dict
 
         for k, v in desired_state.items():
@@ -231,6 +243,12 @@ class Synchronizer:
         tree: Dict[str, Any],
     ) -> List[Action]:
         awaitables = []
+
+        if tree is None:
+            return []
+
+        if isinstance(tree, list):
+            raise Exception("Expected input data to be a dictionary/mapping")
 
         for k, v in tree.items():
             item_path = f"{current_path}/{k}"
@@ -298,49 +316,52 @@ class Synchronizer:
             # These actions must be executed one after another thus no asyncio.gather possible
             for action in actions:
                 if action.kind == ActionKind.PATCH:
-                    result = await self._call(
-                        method=self.session.patch,
+                    result = await self.connection.patch(
                         endpoint=action.path,
                         json=action.set_dict,
                     )
                     progress.update(patch_progress, advance=1)
 
                 elif action.kind == ActionKind.PUT:
-                    result = await self._call(
-                        method=self.session.put,
+                    result = await self.connection.put(
                         endpoint=action.path,
                         json=action.set_dict,
                     )
                     progress.update(put_progress, advance=1)
 
                 elif action.kind == ActionKind.DELETE:
-                    result = await self._call(
-                        method=self.session.delete,
+                    result = await self.connection.delete(
                         endpoint=action.path,
                     )
                     progress.update(delete_progress, advance=1)
 
                 elif action.kind == ActionKind.POST:
-                    result = await self._call(
-                        method=self.session.post,
+                    result = await self.connection.post(
                         endpoint=action.path,
                         json=action.set_dict,
                     )
                     progress.update(post_progress, advance=1)
 
                 else:
-                    raise Exception()
+                    raise Exception(f"Unknown action kind: {action.kind}")
 
                 if result is not None and "error" in result:
+                    if (
+                        "detail" in result
+                        and result["detail"] == "no such command"
+                        and action.path.endswith("/move")
+                    ):
+                        continue
+
                     self.console.log("Error while executing", action)
                     self.console.log("Result", result)
                     raise Exception()
 
-    def _print_diff(
+    def _human_readable_diff(
         self,
         actions: List[Action],
-    ) -> None:
-        self.console.print()
+    ) -> str:
+        lines: List[str] = ["", ""]
 
         for action in actions:
             if action.kind in (ActionKind.POST, ActionKind.PATCH):
@@ -352,35 +373,38 @@ class Synchronizer:
             else:
                 color = ""
 
-            self.console.print(
+            lines.append(
                 f"[magenta]{action.path}[/magenta] [bold {color}]{action.kind.name}[/bold {color}]:"
             )
 
             for line in action.diff():
-                self.console.print(f"  {line}")
+                lines.append(f"  {line}")
 
-            self.console.print()
+            lines.append("")
 
-    async def run(self) -> None:
-        async with aiohttp.ClientSession() as session:
-            self.session = session
+        return "\n".join(lines)
 
-            self.console.log("Analyzing desired and current configurations...")
-            actions = await self._analyze(
-                current_path="",
-                tree=self.desired_tree,
-            )
-            self.console.log(f"Analysis done. Pending actions: {len(actions)}.")
+    async def run(
+        self,
+        desired_tree: Dict,
+    ) -> None:
+        self.console.log("Analyzing desired and current configurations...")
+        actions = await self._analyze(
+            current_path="",
+            tree=desired_tree,
+        )
+        self.console.log(f"Analysis done. Pending actions: {len(actions)}.")
 
-            if len(actions) == 0:
-                return
+        if len(actions) == 0:
+            return
 
-            # This sort is 1) a "safe" heuristic 2) needed for element ids to be stable
-            actions.sort(key=lambda action: action.kind.value)
+        # This sort is 1) a "safe" heuristic 2) needed for element ids to be stable
+        actions.sort(key=lambda action: action.kind.value)
 
-            self.console.log("List of differences:")
-            self._print_diff(actions=actions)
+        self.console.log(
+            "List of differences:", self._human_readable_diff(actions=actions)
+        )
 
-            self.console.log("Applying actions to synchronize the configuration...")
-            await self._apply(actions=actions)
-            self.console.log("All changes applied!")
+        self.console.log("Applying actions to synchronize the configuration...")
+        await self._apply(actions=actions)
+        self.console.log("All changes applied!")

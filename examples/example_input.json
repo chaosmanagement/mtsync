@@ -8,11 +8,39 @@
             },
             {
                 "interface": "bridge",
+                "address": "2010::6/64",
+                "disabled": "false",
+                "comment": "Hello world!"
+            },
+            {
+                "interface": "bridge",
                 "address": "2010::1/64",
                 "disabled": "false",
                 "comment": "Hello world!"
             }
-        ]
+        ],
+        "firewall": {
+            "filter": [
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "log-prefix": "1",
+                    "comment": "Log 1"
+                },
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "log-prefix": "2",
+                    "comment": "Log 2"
+                },
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "log-prefix": "3",
+                    "comment": "Log 3"
+                }
+            ]
+        }
     },
     "ip": {
         "settings": {

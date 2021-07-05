@@ -13,10 +13,11 @@ uvloop = "^0.15.2"
 frozendict = "^2.0.2"
 
 [tool.poetry.dev-dependencies]
-pytest = "^5.2"
 types-click = "^7.1.1"
 types-frozendict = "^0.1.4"
 black = {version = "^21.6b0", allow-prereleases = true}
+TestSlide = "^2.6.3"
+isort = {extras = ["pipfile_deprecated_finder"], version = "^5.9.1"}
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
