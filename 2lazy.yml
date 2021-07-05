@@ -4,3 +4,4 @@ start_in_project_dir: true
 commands:
   dev: 'find . -name "*.py" | entr testslide --show-testslide-stack-trace $(find tests -name "*.py")'
   lint: "isort mtsync && black mtsync/ tests/ && mypy mtsync/ tests/"
+  build: "poetry run pip freeze | grep -v mtsync > requirements.txt && pex -D . -r requirements.txt -m mtsync.cli -o dist/mtsync && ls -lh dist"
